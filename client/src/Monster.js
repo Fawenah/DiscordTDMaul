@@ -3,7 +3,7 @@ import { Graphics, Container } from 'pixi.js';
 const HUD_HEIGHT = 40;
 
 export class Monster {
-    constructor(app, path, goalTile, onReachGoal, onKill, goldValue = 1) {
+    constructor(app, path, goalTile, onReachGoal, onKill, goldValue = 1, room = null) {
         this.app = app;
         this.path = path;
         this.currentStep = 0;
@@ -12,6 +12,7 @@ export class Monster {
         this.hp = this.maxHP;
         this.alive = true;
         this.goldValue = goldValue;
+        this.room = room; // 🔄 Store room reference
         
         this.hpBarBackground = new Graphics()
         .rect(-12, -20, 24, 4)
@@ -34,10 +35,10 @@ export class Monster {
         
         this.goalTile = goalTile;
         this.onReachGoal = onReachGoal;
-
+        
         this.onKill = onKill;
         this.killerId = null; // Track who last hit the monster
-
+        
     }
     
     
@@ -100,7 +101,7 @@ export class Monster {
             this.die();
             return;
         }
-    
+        
         const hpPercent = Math.max(this.hp / this.maxHP, 0);
         this.hpBar.scale.x = hpPercent;
     }    
@@ -109,10 +110,21 @@ export class Monster {
     die() {
         this.alive = false;
         this.container.destroy();
-        if (this.onKill  && this.killerId) {
-            this.onKill (this.killerId, this.goldValue); // ✅ pass killer info
+        
+        // ✅ Broadcast kill for synchronization if connected
+        if (this.killerId && this.room) {
+            this.room.send("monster_killed", {
+                killerId: this.killerId,
+                goldValue: this.goldValue,
+            });
+        }
+        
+        // ✅ Local reward callback
+        if (this.onKill && this.killerId) {
+            this.onKill(this.killerId, this.goldValue);
         }
     }
+    
     
     
     

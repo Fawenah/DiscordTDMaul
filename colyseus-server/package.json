@@ -1,0 +1,25 @@
+{
+    "name": "colyseus-server",
+    "version": "1.0.0",
+    "main": "index.ts",
+    "type": "module",
+    "scripts": {
+        "start": "ts-node index.ts"
+    },
+    "dependencies": {
+        "@colyseus/core": "^0.16.16",
+        "@colyseus/schema": "^3.0.33",
+        "@colyseus/ws-transport": "^0.16.4",
+        "colyseus": "^0.16.3",
+        "cors": "^2.8.5",
+        "express": "^4.21.2"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "description": "",
+    "devDependencies": {
+        "ts-node": "^10.9.2",
+        "typescript": "^5.8.3"
+    }
+}

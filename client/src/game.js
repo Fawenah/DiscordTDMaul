@@ -2,6 +2,11 @@ import { Application, Graphics, Text, TextStyle, Container } from 'pixi.js';
 import { maps } from './mapData.js';
 import { Monster } from './Monster.js';
 import { Projectile } from './Projectile.js';
+import * as Colyseus from "colyseus.js";
+import { ROOM_NAME } from "../../shared/constants.js";
+
+let colyseusClient;
+let colyseusRoom;
 
 const originalMap = maps.waves;
 
@@ -25,15 +30,19 @@ const TILE_GOAL = 7;
 
 const START_GOLD = 200;
 const START_LIVES = 10;
-const START_TOWER_LEVEL = 10;
-const TOWER_COST = 5;
-const UPGRADE_COST_SCALE = 5; // Cost increase per level
+const START_TOWER_LEVEL = 5;
+const TOWER_COST = 10;
+const UPGRADE_COST_SCALE = 10; // Cost increase per level
 
 const ATTACKSPEED_DEFAULT = 250;
 const PROJECTILE_SPEED = 3;
 
 const players = new Map(); // Store player data
+
+
 let localPlayerId = null; // Keep track of the local player ID
+let hostId = null;
+let isHost = false;
 
 // ===== External Functions =====
 
@@ -116,12 +125,21 @@ export async function createGame(container, sdk, auth) {
         app.stage.addChild(tower.overlay); // Bring overlay to front
         setupTowerHover(tower);
         
+        if (colyseusRoom && player.id === localPlayerId) {
+            colyseusRoom.send("upgrade_tower", {
+                x: tower.x,
+                y: tower.y,
+                level: tower.level,
+                owner: tower.ownerId,
+            });
+        }        
+        
         console.log(`Tower at (${tower.x}, ${tower.y}) upgraded to level ${newLevel}`);
     }
     
     
     
-    function handleTowerPlacement(app, tileX, tileY, userId) {
+    function handleTowerPlacement(app, tileX, tileY, userId, level = START_TOWER_LEVEL) {
         const player = players.get(userId);
         if (!player) return;
         if (
@@ -155,7 +173,6 @@ export async function createGame(container, sdk, auth) {
         updatePlayerGoldText(userId); // ✅ reflect gold change for the right player
         mapData[tileY][tileX] = TILE_TOWER;
         
-        const level = START_TOWER_LEVEL;
         const { damage, attackSpeed, range } = getTowerStatsForLevel(level);
         const cx = tileX * TILE_SIZE + TILE_SIZE / 2;
         const cy = tileY * TILE_SIZE + TILE_SIZE / 2 + HUD_HEIGHT;
@@ -206,6 +223,15 @@ export async function createGame(container, sdk, auth) {
         player.towers.push(tower);
         towers.push(tower);
         setupTowerHover(tower);
+        
+        if (colyseusRoom && userId === localPlayerId) {
+            colyseusRoom.send("place_tower", {
+                x: tileX,
+                y: tileY,
+                level,
+            });
+        }         
+        
         console.log(`Tower placed at (${tileX}, ${tileY})`);
     }
     
@@ -219,8 +245,79 @@ export async function createGame(container, sdk, auth) {
     console.log("Pixi app initialized");
     app.stage.sortableChildren = true;
     
+    colyseusClient = new Colyseus.Client("wss://cape-oem-arrivals-escape.trycloudflare.com"); // adjust URL if needed
+    
+    try {
+        colyseusRoom = await colyseusClient.joinOrCreate(ROOM_NAME);
+        console.log("Joined Colyseus room:", colyseusRoom.sessionId);
+        
+        colyseusRoom.onMessage("tower_placed", (data) => {
+            if (data.owner === localPlayerId) return; // skip if already placed locally
+            console.log("Tower placed (sync):", data);
+            handleTowerPlacement(app, data.x, data.y, data.owner, data.level);
+        });
+        
+        colyseusRoom.onMessage("tower_upgraded", (data) => {
+            if (data.owner === localPlayerId) return;
+            console.log("Tower upgraded (sync):", data);
+            const tower = towers.find(t => t.x === data.x && t.y === data.y);
+            const player = players.get(data.owner);
+            if (tower && player) {
+                upgradeTower(app, tower, player); // upgrade it as if local
+            }
+        });
+        
+        colyseusRoom.onMessage("tower_sold", (data) => {
+            if (data.owner === localPlayerId) return;
+            console.log("Tower sold (sync):", data);
+            const index = towers.findIndex(t => t.x === data.x && t.y === data.y);
+            if (index !== -1) {
+                const tower = towers[index];
+                tower.gfx.destroy();
+                tower.overlay.destroy();
+                tower.rangeCircle.destroy();
+                tower.container.destroy();
+                towers.splice(index, 1);
+                mapData[data.y][data.x] = TILE_GROUND;
+                
+                const tileGfx = new Graphics()
+                .rect(data.x * TILE_SIZE, data.y * TILE_SIZE + HUD_HEIGHT, TILE_SIZE, TILE_SIZE)
+                .fill({ color: 0x80a343 });
+                app.stage.addChild(tileGfx);
+            }
+        });
+        
+        colyseusRoom.onMessage("monster_killed", ({ killerId, goldValue }) => {
+            console.log("Monster killed (sync):", killerId, goldValue);
+            const killer = players.get(killerId);
+            if (killer) {
+                killer.gold += goldValue;
+                updatePlayerGoldText(killerId);
+                showFloatingGold(app, killerId, goldValue);
+            }
+        });
+        
+        colyseusRoom.onMessage("player_joined", (data) => {
+            console.log("Player joined:", data.id);
+        });
+        
+        colyseusRoom.onMessage("player_left", (data) => {
+            console.log("Player left:", data.id);
+        });
+        
+    } catch (err) {
+        console.error("Failed to join Colyseus room:", err);
+    }
+    
     const me = auth.user;
     localPlayerId = me.id; // keep track globally or scoped in createGame
+    const { participants } = await sdk.commands.getInstanceConnectedParticipants();
+    const sorted = participants.sort((a, b) => a.id.localeCompare(b.id));
+    hostId = sorted[0].id;
+    isHost = localPlayerId === hostId;
+    
+    console.log(`Local Player ID: ${localPlayerId}`);
+    console.log(`Host ID: ${hostId} (${isHost ? "You are the host" : "Not host"})`);
     handlePlayerJoin(app, me.id, me.username);
     
     // === HUD Elements ===
@@ -229,7 +326,7 @@ export async function createGame(container, sdk, auth) {
     .fill({ color: 0x1e1e1e }); // dark background
     hud.zIndex = 10;
     app.stage.addChild(hud);
-
+    
     const restartButton = new Text({
         text: 'Restart',
         style: {
@@ -343,7 +440,7 @@ export async function createGame(container, sdk, auth) {
                 console.warn("Could not find player for this tower!");
                 return;
             }
-
+            
             if (tower.ownerId !== localPlayerId) {
                 console.warn("You can only sell your own towers!");
                 return;
@@ -375,6 +472,14 @@ export async function createGame(container, sdk, auth) {
             .rect(tileX * TILE_SIZE, tileY * TILE_SIZE + HUD_HEIGHT, TILE_SIZE, TILE_SIZE)
             .fill({ color: 0x80a343 });
             app.stage.addChild(tileGfx);
+            
+            if (colyseusRoom && tower.ownerId === localPlayerId) {
+                colyseusRoom.send("tower_sold", {
+                    x: tileX,
+                    y: tileY,
+                    userId: tower.ownerId,
+                });
+            }          
             
             console.log(`Tower sold at (${tileX}, ${tileY})`);
         }
@@ -430,7 +535,8 @@ export async function createGame(container, sdk, auth) {
                     showFloatingGold(app, killerId, goldValue);
                 }
             },
-            MONSTER_BASE_GOLD_VALUE
+            MONSTER_BASE_GOLD_VALUE,
+            colyseusRoom
         );
         monsters.push(monster);
     }, SPAWN_TIME);
@@ -836,14 +942,14 @@ function showFloatingGold(app, player, amount) {
     if (!player || !Array.isArray(player.towers) || player.towers.length === 0) return;
     const totalTowers = player.towers.length;
     if (totalTowers === 0) return;
-
+    
     // Pick one of the player’s towers (e.g. most recently placed)
     const tower = player.towers[totalTowers - 1];
     const [x, y] = [
         tower.x * TILE_SIZE + TILE_SIZE / 2,
         tower.y * TILE_SIZE + TILE_SIZE / 2 + HUD_HEIGHT,
     ];
-
+    
     const text = new Text({
         text: `+${amount}`,
         style: {
@@ -854,27 +960,27 @@ function showFloatingGold(app, player, amount) {
             strokeThickness: 2,
         },
     });
-
+    
     text.anchor = 0.5;
     text.x = x;
     text.y = y;
     app.stage.addChild(text);
-
+    
     // Animate: float up & fade out
     const duration = 40; // ~2/3 of a second at 60fps
     let frame = 0;
     const initialY = text.y;
-
+    
     const ticker = (delta) => {
         frame++;
         text.y = initialY - frame * 0.5;
         text.alpha = 1 - frame / duration;
-
+        
         if (frame >= duration) {
             app.ticker.remove(ticker);
             text.destroy();
         }
     };
-
+    
     app.ticker.add(ticker);
 }
