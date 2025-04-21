@@ -1,7 +1,7 @@
 import { Graphics } from 'pixi.js';
 
 export class Projectile {
-    constructor(app, startX, startY, target, damage = 34, speed = 5, ownerId) {
+    constructor(app, startX, startY, target, damage = 34, speed = 5, ownerId = null) {
         this.ownerId = ownerId;
         this.app = app;
         this.target = target;

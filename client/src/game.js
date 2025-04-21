@@ -6,7 +6,7 @@ import { Projectile } from './Projectile.js';
 const originalMap = maps.waves;
 
 // ===== Constants ===== 
-const HUD_HEIGHT = 40;
+const HUD_HEIGHT = 80;
 
 const TILE_SIZE = 40;
 // Get the map size from the original map
@@ -14,6 +14,7 @@ const MAP_WIDTH = originalMap[0].length;
 const MAP_HEIGHT = originalMap.length;
 
 const SPAWN_TIME = 500; // in ms
+const MONSTER_BASE_GOLD_VALUE = 1;
 
 const TILE_GROUND = 0;
 const TILE_BLOCK = 1;
@@ -24,7 +25,7 @@ const TILE_GOAL = 7;
 
 const START_GOLD = 200;
 const START_LIVES = 10;
-const START_TOWER_LEVEL = 1;
+const START_TOWER_LEVEL = 10;
 const TOWER_COST = 5;
 const UPGRADE_COST_SCALE = 5; // Cost increase per level
 
@@ -43,7 +44,6 @@ export async function createGame(container, sdk, auth) {
     const app = new Application();
     let lives = START_LIVES;
     let gameOver = false;
-    let gold = START_GOLD;
     const towers = [];
     const projectiles = [];
     
@@ -58,6 +58,7 @@ export async function createGame(container, sdk, auth) {
         
         gameOverText.x = app.screen.width / 2 - gameOverText.width / 2;
         gameOverText.y = app.screen.height / 2 - gameOverText.height / 2;
+        gameOverText.zIndex = 1000; // Bring to front
         
         app.stage.addChild(gameOverText);
         
@@ -154,7 +155,7 @@ export async function createGame(container, sdk, auth) {
         updatePlayerGoldText(userId); // ✅ reflect gold change for the right player
         mapData[tileY][tileX] = TILE_TOWER;
         
-        const level = 1;
+        const level = START_TOWER_LEVEL;
         const { damage, attackSpeed, range } = getTowerStatsForLevel(level);
         const cx = tileX * TILE_SIZE + TILE_SIZE / 2;
         const cy = tileY * TILE_SIZE + TILE_SIZE / 2 + HUD_HEIGHT;
@@ -199,8 +200,10 @@ export async function createGame(container, sdk, auth) {
             overlay,
             rangeCircle,
             container,
+            ownerId: userId,
         };
         
+        player.towers.push(tower);
         towers.push(tower);
         setupTowerHover(tower);
         console.log(`Tower placed at (${tileX}, ${tileY})`);
@@ -214,16 +217,19 @@ export async function createGame(container, sdk, auth) {
         background: '#ff0000',
     });
     console.log("Pixi app initialized");
+    app.stage.sortableChildren = true;
     
     const me = auth.user;
     localPlayerId = me.id; // keep track globally or scoped in createGame
     handlePlayerJoin(app, me.id, me.username);
     
+    // === HUD Elements ===
     const hud = new Graphics()
     .rect(0, 0, TILE_SIZE * MAP_WIDTH, HUD_HEIGHT)
     .fill({ color: 0x1e1e1e }); // dark background
+    hud.zIndex = 10;
     app.stage.addChild(hud);
-    
+
     const restartButton = new Text({
         text: 'Restart',
         style: {
@@ -237,14 +243,13 @@ export async function createGame(container, sdk, auth) {
     });
     restartButton.interactive = true;
     restartButton.cursor = 'pointer';
-    
     restartButton.x = TILE_SIZE * MAP_WIDTH - 90; // adjust as needed
     restartButton.y = 10;
-    
+    restartButton.zIndex = 13; // Bring to front
     restartButton.on('pointerdown', () => {
         console.log("Restart button clicked");
         container.innerHTML = '';
-        createGame(container);
+        createGame(container, sdk, auth);
     });
     
     restartButton.on('pointerover', () => {
@@ -253,8 +258,6 @@ export async function createGame(container, sdk, auth) {
     restartButton.on('pointerout', () => {
         restartButton.style.fill = 0xffffff;
     });
-    
-    
     app.stage.addChild(restartButton);
     
     
@@ -271,6 +274,7 @@ export async function createGame(container, sdk, auth) {
     });
     livesText.x = 10;
     livesText.y = 10; // inside HUD bar
+    livesText.zIndex = 12;
     app.stage.addChild(livesText);
     
     container.appendChild(app.canvas);
@@ -418,13 +422,15 @@ export async function createGame(container, sdk, auth) {
                 livesText.text = `Lives: ${lives}`;
                 if (lives <= 0) handleGameOver(app, container);
             },
-            (killerId) => {
+            (killerId, goldValue) => {
                 const killer = players.get(killerId);
                 if (killer) {
-                    killer.gold += 1;
+                    killer.gold += goldValue;
                     updatePlayerGoldText(killerId); // ✅ only update that player
+                    showFloatingGold(app, killerId, goldValue);
                 }
-            }
+            },
+            MONSTER_BASE_GOLD_VALUE
         );
         monsters.push(monster);
     }, SPAWN_TIME);
@@ -803,6 +809,7 @@ function createPlayerGoldText(app, player, index, isLocal = false) {
     });
     nameText.x = 150 + index * 150;
     nameText.y = 8;
+    nameText.zIndex = 11;
     app.stage.addChild(nameText);
     player.nameText = nameText;
     
@@ -819,6 +826,55 @@ function createPlayerGoldText(app, player, index, isLocal = false) {
     });
     goldText.x = 150 + index * 150;
     goldText.y = 20;
+    goldText.zIndex = 12;
     app.stage.addChild(goldText);
     player.goldText = goldText;
+}
+
+
+function showFloatingGold(app, player, amount) {
+    if (!player || !Array.isArray(player.towers) || player.towers.length === 0) return;
+    const totalTowers = player.towers.length;
+    if (totalTowers === 0) return;
+
+    // Pick one of the player’s towers (e.g. most recently placed)
+    const tower = player.towers[totalTowers - 1];
+    const [x, y] = [
+        tower.x * TILE_SIZE + TILE_SIZE / 2,
+        tower.y * TILE_SIZE + TILE_SIZE / 2 + HUD_HEIGHT,
+    ];
+
+    const text = new Text({
+        text: `+${amount}`,
+        style: {
+            fill: 0xffff00,
+            fontSize: 16,
+            fontWeight: 'bold',
+            stroke: 0x000000,
+            strokeThickness: 2,
+        },
+    });
+
+    text.anchor = 0.5;
+    text.x = x;
+    text.y = y;
+    app.stage.addChild(text);
+
+    // Animate: float up & fade out
+    const duration = 40; // ~2/3 of a second at 60fps
+    let frame = 0;
+    const initialY = text.y;
+
+    const ticker = (delta) => {
+        frame++;
+        text.y = initialY - frame * 0.5;
+        text.alpha = 1 - frame / duration;
+
+        if (frame >= duration) {
+            app.ticker.remove(ticker);
+            text.destroy();
+        }
+    };
+
+    app.ticker.add(ticker);
 }

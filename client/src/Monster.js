@@ -3,7 +3,7 @@ import { Graphics, Container } from 'pixi.js';
 const HUD_HEIGHT = 40;
 
 export class Monster {
-    constructor(app, path, goalTile, onReachGoal, onKill) {
+    constructor(app, path, goalTile, onReachGoal, onKill, goldValue = 1) {
         this.app = app;
         this.path = path;
         this.currentStep = 0;
@@ -11,6 +11,7 @@ export class Monster {
         this.maxHP = 100;
         this.hp = this.maxHP;
         this.alive = true;
+        this.goldValue = goldValue;
         
         this.hpBarBackground = new Graphics()
         .rect(-12, -20, 24, 4)
@@ -108,8 +109,8 @@ export class Monster {
     die() {
         this.alive = false;
         this.container.destroy();
-        if (this.onDeath && this.killerId) {
-            this.onDeath(this.killerId); // ✅ pass killer info
+        if (this.onKill  && this.killerId) {
+            this.onKill (this.killerId, this.goldValue); // ✅ pass killer info
         }
     }
     
